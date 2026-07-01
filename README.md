@@ -1,4 +1,4 @@
-# Locker (Only Linux, Windows Functionality addeed later)
+# Locker (Only Unuix, Windows Functionality addeed later)
 
 An intentionally ugly lock screen with a passphrase, pixelated background, and
 random green/red keystroke flashes.
