@@ -1,0 +1,367 @@
+#!/usr/bin/env python3
+"""
+Ugly-on-purpose lock screen for Fedora/GNOME.
+
+- Dark blue handle + bright yellow square lock icon (intentionally clashing).
+- No fixed-length ring anymore. Instead, every keystroke triggers a random
+  green/red flash somewhere on screen (green = correct char, red = wrong),
+  which works for passphrases of any length.
+- Pixelates the screen behind the lock.
+- Passphrase is never stored or displayed in plaintext. Each character
+  position is hashed separately (salted SHA-256) so per-character feedback
+  is possible without keeping the real passphrase anywhere on disk.
+- Passphrase can be any length and mix letters, numbers, and symbols.
+- After typing the passphrase, you must press Enter 3 times quickly
+  (within 600ms) to actually submit it — a single Enter does nothing.
+
+First run: prompts you to set a passphrase.
+Every run after that: shows the lock.
+
+Usage:
+    python3 lock.py            # show the lock screen
+    python3 lock.py --setup    # (re)set your passphrase
+"""
+
+import os
+import sys
+import json
+import hashlib
+import secrets
+import random
+import subprocess
+import tempfile
+import tkinter as tk
+from tkinter import font as tkfont
+
+try:
+    from PIL import Image
+except ImportError as e:
+    print(f"Missing dependency (PIL.Image): {e}")
+    print("Run: python3 -m pip install --user pillow")
+    sys.exit(1)
+
+try:
+    from PIL import ImageTk
+except ImportError as e:
+    print(f"Missing dependency (PIL.ImageTk): {e}")
+    print("On Fedora this is a separate package from base Pillow. Run:")
+    print("  sudo dnf install python3-pillow-tk")
+    sys.exit(1)
+
+CONFIG_DIR = os.path.expanduser("~/.config/locker")
+PIN_FILE = os.path.join(CONFIG_DIR, "pin.json")
+
+UGLY_YELLOW = "#fbff00"
+UGLY_BLUE = "#0a1a4f"
+UGLY_PINK = "#ff2fb0"
+UGLY_GREEN = "#00ff5e"
+UGLY_RED = "#ff2200"
+BG_FALLBACK = "#3a3a3a"
+
+# Enter must be pressed this many times within this window (ms) to submit
+TRIPLE_TAP_WINDOW_MS = 600
+
+
+# ---------------------------------------------------------------------------
+# Passphrase storage (hashed per-character, never plaintext)
+# ---------------------------------------------------------------------------
+
+def ensure_config_dir():
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    os.chmod(CONFIG_DIR, 0o700)
+
+
+def hash_char(salt: str, position: int, ch: str) -> str:
+    payload = f"{salt}:{position}:{ch}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def save_pin(passphrase: str):
+    ensure_config_dir()
+    salt = secrets.token_hex(16)
+    hashes = [hash_char(salt, i, c) for i, c in enumerate(passphrase)]
+    data = {"salt": salt, "length": len(passphrase), "hashes": hashes}
+    with open(PIN_FILE, "w") as f:
+        json.dump(data, f)
+    os.chmod(PIN_FILE, 0o600)
+
+
+def load_pin_data():
+    if not os.path.exists(PIN_FILE):
+        return None
+    with open(PIN_FILE) as f:
+        return json.load(f)
+
+
+# ---------------------------------------------------------------------------
+# Screenshot + pixelation
+# ---------------------------------------------------------------------------
+
+def take_screenshot() -> str:
+    """Try several screenshot backends depending on session type. Returns
+    a path to a PNG, or None if nothing worked."""
+    path = os.path.join(tempfile.gettempdir(), "locker_shot.png")
+
+    candidates = [
+        ["gnome-screenshot", "-f", path],
+        ["grim", path],                       # Wayland (sway/some GNOME setups)
+        ["import", "-window", "root", path],  # ImageMagick, X11
+        ["scrot", path],                      # X11
+    ]
+
+    for cmd in candidates:
+        try:
+            subprocess.run(cmd, check=True, timeout=5,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if os.path.exists(path):
+                return path
+        except (FileNotFoundError, subprocess.CalledProcessError,
+                subprocess.TimeoutExpired):
+            continue
+    return None
+
+
+def pixelate(path: str, block_size: int = 24) -> Image.Image:
+    img = Image.open(path).convert("RGB")
+    w, h = img.size
+    small = img.resize((max(1, w // block_size), max(1, h // block_size)), Image.NEAREST)
+    return small.resize((w, h), Image.NEAREST)
+
+
+# ---------------------------------------------------------------------------
+# Setup UI (first run / --setup)
+# ---------------------------------------------------------------------------
+
+def run_setup():
+    root = tk.Tk()
+    root.title("Set your lock passphrase")
+    root.geometry("460x240")
+    root.configure(bg=UGLY_BLUE)
+
+    ugly_font = tkfont.Font(family="Sans", size=14, weight="bold")
+
+    tk.Label(root, text="Choose a passphrase (letters, numbers, symbols, any length \u2265 4)",
+              bg=UGLY_BLUE, fg=UGLY_YELLOW, font=ugly_font, wraplength=420,
+              justify="center").pack(pady=(20, 5))
+
+    entry1 = tk.Entry(root, show="*", font=ugly_font, justify="center",
+                       bg=UGLY_YELLOW, fg=UGLY_BLUE, insertbackground=UGLY_BLUE)
+    entry1.pack(pady=5)
+
+    tk.Label(root, text="Confirm passphrase", bg=UGLY_BLUE, fg=UGLY_YELLOW,
+              font=ugly_font).pack(pady=(15, 5))
+    entry2 = tk.Entry(root, show="*", font=ugly_font, justify="center",
+                       bg=UGLY_YELLOW, fg=UGLY_BLUE, insertbackground=UGLY_BLUE)
+    entry2.pack(pady=5)
+
+    status = tk.Label(root, text="", bg=UGLY_BLUE, fg=UGLY_PINK, font=ugly_font)
+    status.pack(pady=10)
+
+    def submit():
+        p1, p2 = entry1.get(), entry2.get()
+        if len(p1) < 4:
+            status.config(text="Passphrase must be at least 4 characters.")
+            return
+        if p1 != p2:
+            status.config(text="Passphrases don't match.")
+            entry1.delete(0, tk.END)
+            entry2.delete(0, tk.END)
+            return
+        save_pin(p1)
+        status.config(text="Saved. Closing...", fg=UGLY_GREEN)
+        root.after(600, root.destroy)
+
+    tk.Button(root, text="Save passphrase", command=submit, bg=UGLY_PINK,
+              fg="white", font=ugly_font, relief="raised", bd=5).pack(pady=10)
+
+    root.bind("<Return>", lambda e: submit())
+    root.bind("<Escape>", lambda e: root.destroy())
+
+    entry1.focus_set()
+    root.mainloop()
+
+
+# ---------------------------------------------------------------------------
+# Lock screen UI
+# ---------------------------------------------------------------------------
+
+class LockScreen:
+    def __init__(self, pin_data):
+        self.pin_data = pin_data
+        self.length = pin_data["length"]
+        self.salt = pin_data["salt"]
+        self.hashes = pin_data["hashes"]
+        self.typed = []       # list of chars entered so far
+        self.correctness = [] # list of bool, parallel to typed
+        self.enter_times = [] # timestamps (ms) of recent Enter presses
+
+        self.root = tk.Tk()
+        self.root.attributes("-fullscreen", True)
+        self.root.attributes("-topmost", True)
+        self.root.configure(bg=BG_FALLBACK)
+        self.root.protocol("WM_DELETE_WINDOW", lambda: None)  # block close button
+        self.root.bind("<Alt-F4>", lambda e: "break")
+
+        self.width = self.root.winfo_screenwidth()
+        self.height = self.root.winfo_screenheight()
+
+        self.canvas = tk.Canvas(self.root, width=self.width, height=self.height,
+                                 highlightthickness=0, bg=BG_FALLBACK)
+        self.canvas.pack(fill="both", expand=True)
+
+        self._draw_background()
+        self._draw_lock()
+
+        self.root.grab_set()
+        self.root.focus_force()
+        self.root.bind("<Key>", self.on_key)
+
+        self.root.mainloop()
+
+    # -- background -----------------------------------------------------
+    def _draw_background(self):
+        shot_path = take_screenshot()
+        if shot_path:
+            pix = pixelate(shot_path, block_size=22)
+            pix = pix.resize((self.width, self.height))
+            self.bg_image = ImageTk.PhotoImage(pix)
+            self.canvas.create_image(0, 0, image=self.bg_image, anchor="nw")
+        else:
+            self.canvas.create_rectangle(0, 0, self.width, self.height,
+                                          fill=BG_FALLBACK, outline="")
+
+    # -- lock icon --------------------------------------------------------
+    def _draw_lock(self):
+        cx, cy = self.width // 2, self.height // 2
+        self.cx, self.cy = cx, cy
+
+        # Deliberately garish ring, purely decorative now (no segments)
+        ring_radius = 180
+        self.canvas.create_oval(cx - ring_radius - 10, cy - ring_radius - 10,
+                                 cx + ring_radius + 10, cy + ring_radius + 10,
+                                 outline=UGLY_PINK, width=6)
+        self.canvas.create_oval(cx - ring_radius, cy - ring_radius,
+                                 cx + ring_radius, cy + ring_radius,
+                                 outline="#888888", width=14)
+
+        # ugly yellow square body
+        sq = 130
+        self.canvas.create_rectangle(cx - sq/2, cy - sq/2 + 30, cx + sq/2, cy + sq/2 + 30,
+                                      fill=UGLY_YELLOW, outline=UGLY_PINK, width=6)
+
+        # ugly dark blue handle (crooked arc + rectangles, on purpose ugly)
+        self.canvas.create_arc(cx - 55, cy - 110, cx + 55, cy + 10,
+                                start=0, extent=180, style="arc",
+                                outline=UGLY_BLUE, width=22)
+        self.canvas.create_rectangle(cx - 8, cy - 20, cx + 14, cy + 40,
+                                      fill=UGLY_BLUE, outline="black", width=3)
+
+        # keyhole, off-center on purpose
+        self.canvas.create_oval(cx - 14, cy + 15, cx + 4, cy + 35,
+                                 fill=UGLY_BLUE, outline="")
+        self.canvas.create_rectangle(cx - 6, cy + 28, cx + 2, cy + 55,
+                                      fill=UGLY_BLUE, outline="")
+
+        clash_font = tkfont.Font(family="Sans", size=20, weight="bold")
+        self.canvas.create_text(cx, cy - ring_radius - 40,
+                                 text="LOCKED", fill=UGLY_GREEN, font=clash_font)
+
+        # progress dots, no digits/chars shown, just count typed
+        self.progress_text = self.canvas.create_text(
+            cx, cy + ring_radius + 40, text="", fill="white",
+            font=tkfont.Font(family="Sans", size=18, weight="bold"))
+
+    def _update_progress_dots(self):
+        dots = "*" * len(self.typed)
+        self.canvas.itemconfig(self.progress_text, text=dots)
+
+    # -- random flash effect --------------------------------------------
+    def _flash(self, correct: bool):
+        color = UGLY_GREEN if correct else UGLY_RED
+        margin = 60
+        x = random.randint(margin, self.width - margin)
+        y = random.randint(margin, self.height - margin)
+        r = random.randint(18, 42)
+        flash_id = self.canvas.create_oval(x - r, y - r, x + r, y + r,
+                                            fill=color, outline="")
+        # simple fade: shrink it a few times then delete
+        self._fade_step(flash_id, r, 0)
+
+    def _fade_step(self, flash_id, r, step):
+        if step >= 5:
+            self.canvas.delete(flash_id)
+            return
+        shrink = r * (1 - step / 5)
+        try:
+            coords = self.canvas.coords(flash_id)
+            cx0, cy0 = (coords[0] + coords[2]) / 2, (coords[1] + coords[3]) / 2
+            self.canvas.coords(flash_id, cx0 - shrink, cy0 - shrink,
+                                cx0 + shrink, cy0 + shrink)
+        except (tk.TclError, IndexError):
+            return
+        self.root.after(60, lambda: self._fade_step(flash_id, r, step + 1))
+
+    # -- input handling ------------------------------------------------
+    def on_key(self, event):
+        ch = event.char
+        if ch and ch.isprintable():
+            pos = len(self.typed)
+            if pos < self.length:
+                expected_hash = self.hashes[pos]
+                actual_hash = hash_char(self.salt, pos, ch)
+                correct = (expected_hash == actual_hash)
+            else:
+                correct = False
+            self.typed.append(ch)
+            self.correctness.append(correct)
+            self._flash(correct)
+            self._update_progress_dots()
+
+        elif event.keysym == "BackSpace":
+            if self.typed:
+                self.typed.pop()
+                self.correctness.pop()
+                self._update_progress_dots()
+
+        elif event.keysym == "Return":
+            now = self.root.tk.call('clock', 'milliseconds')
+            self.enter_times.append(int(now))
+            # keep only presses within the last TRIPLE_TAP_WINDOW_MS
+            self.enter_times = [t for t in self.enter_times
+                                 if now - t <= TRIPLE_TAP_WINDOW_MS]
+            if len(self.enter_times) >= 3:
+                self.enter_times = []
+                self.check_full()
+
+    def check_full(self):
+        all_correct = (len(self.typed) == self.length and all(self.correctness))
+        if all_correct:
+            self.unlock()
+        else:
+            self.root.after(300, self.reset_attempt)
+
+    def reset_attempt(self):
+        self.typed = []
+        self.correctness = []
+        self.enter_times = []
+        self._update_progress_dots()
+
+    def unlock(self):
+        self.root.grab_release()
+        self.root.destroy()
+
+
+# ---------------------------------------------------------------------------
+
+def main():
+    if "--setup" in sys.argv or load_pin_data() is None:
+        run_setup()
+        if load_pin_data() is None:
+            return  # user closed setup without saving
+
+    pin_data = load_pin_data()
+    LockScreen(pin_data)
+
+
+if __name__ == "__main__":
+    main()
