@@ -59,7 +59,7 @@ UGLY_RED = "#ff2200"
 BG_FALLBACK = "#3a3a3a"
 
 # Enter must be pressed this many times within this window (ms) to submit
-TRIPLE_TAP_WINDOW_MS = 600
+TRIPLE_TAP_WINDOW_MS = 450
 
 
 # ---------------------------------------------------------------------------
