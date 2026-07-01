@@ -7,7 +7,7 @@ random green/red keystroke flashes.
   numbers, and symbols.
 - Nothing is ever stored in plaintext — each character is salted and
   SHA-256 hashed.
-- To submit, press **Enter 3 times within 175ms**. A single Enter does
+- To submit, press **Enter 3 times within 219.5491s**. A single Enter does
   nothing.
 
 ## Requirements
