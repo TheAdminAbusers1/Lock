@@ -29,25 +29,10 @@ import math
 import hashlib
 import secrets
 import random
-import subprocess
-import tempfile
 import tkinter as tk
 from tkinter import font as tkfont
 
-try:
-    from PIL import Image
-except ImportError as e:
-    print(f"Missing dependency (PIL.Image): {e}")
-    print("Run: python3 -m pip install --user pillow")
-    sys.exit(1)
 
-try:
-    from PIL import ImageTk
-except ImportError as e:
-    print(f"Missing dependency (PIL.ImageTk): {e}")
-    print("On Fedora this is a separate package from base Pillow. Run:")
-    print("  sudo dnf install python3-pillow-tk")
-    sys.exit(1)
 
 CONFIG_DIR = os.path.expanduser("~/.config/locker")
 PIN_FILE = os.path.join(CONFIG_DIR, "pin.json")
@@ -99,40 +84,6 @@ def load_pin_data():
     with open(PIN_FILE) as f:
         return json.load(f)
 
-
-# ---------------------------------------------------------------------------
-# Screenshot + pixelation
-# ---------------------------------------------------------------------------
-
-def take_screenshot() -> str:
-    """Try several screenshot backends depending on session type. Returns
-    a path to a PNG, or None if nothing worked."""
-    path = os.path.join(tempfile.gettempdir(), "locker_shot.png")
-
-    candidates = [
-        ["gnome-screenshot", "-f", path],
-        ["grim", path],                       # Wayland (sway/some GNOME setups)
-        ["import", "-window", "root", path],  # ImageMagick, X11
-        ["scrot", path],                      # X11
-    ]
-
-    for cmd in candidates:
-        try:
-            subprocess.run(cmd, check=True, timeout=5,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if os.path.exists(path):
-                return path
-        except (FileNotFoundError, subprocess.CalledProcessError,
-                subprocess.TimeoutExpired):
-            continue
-    return None
-
-
-def pixelate(path: str, block_size: int = 24) -> Image.Image:
-    img = Image.open(path).convert("RGB")
-    w, h = img.size
-    small = img.resize((max(1, w // block_size), max(1, h // block_size)), Image.NEAREST)
-    return small.resize((w, h), Image.NEAREST)
 
 
 # ---------------------------------------------------------------------------
@@ -201,12 +152,13 @@ class LockScreen:
         self.typed = []       # list of chars entered so far
         self.correctness = [] # list of bool, parallel to typed
         self.enter_times = [] # timestamps (ms) of recent Enter presses
+        self.locked_until = 0 # time (ms) when next keystroke is allowed
 
         self.root = tk.Tk()
         self.root.attributes("-fullscreen", True)
         self.root.attributes("-topmost", True)
         self.root.configure(bg=BG_FALLBACK)
-        self.root.protocol("WM_DELETE_WINDOW", lambda: None)  # block close button
+        self.root.protocol("WM_DELETE_WINDOW", lambda: None)
         self.root.bind("<Alt-F4>", lambda e: "break")
 
         self.width = self.root.winfo_screenwidth()
@@ -216,7 +168,6 @@ class LockScreen:
                                  highlightthickness=0, bg=BG_FALLBACK)
         self.canvas.pack(fill="both", expand=True)
 
-        self._draw_background()
         self._draw_lock()
 
         self.root.grab_set()
@@ -224,18 +175,6 @@ class LockScreen:
         self.root.bind("<Key>", self.on_key)
 
         self.root.mainloop()
-
-    # -- background -----------------------------------------------------
-    def _draw_background(self):
-        shot_path = take_screenshot()
-        if shot_path:
-            pix = pixelate(shot_path, block_size=22)
-            pix = pix.resize((self.width, self.height))
-            self.bg_image = ImageTk.PhotoImage(pix)
-            self.canvas.create_image(0, 0, image=self.bg_image, anchor="nw")
-        else:
-            self.canvas.create_rectangle(0, 0, self.width, self.height,
-                                          fill=BG_FALLBACK, outline="")
 
     # -- lock icon --------------------------------------------------------
     def _draw_lock(self):
@@ -313,6 +252,11 @@ class LockScreen:
 
     # -- input handling ------------------------------------------------
     def on_key(self, event):
+        # Check if we're still in lockout period after a wrong guess
+        now = self.root.tk.call('clock', 'milliseconds')
+        if int(now) < self.locked_until:
+            return  # Ignore keystrokes during lockout
+        
         ch = event.char
         if ch and ch.isprintable():
             pos = len(self.typed)
@@ -328,9 +272,9 @@ class LockScreen:
             self._update_progress_dots()
 
             if not correct:
-                # Wrong character: wipe progress immediately so they have
-                # to start the passphrase over.
-                self.root.after(0, self.reset_attempt)
+                # Wrong character: lock out input for 400ms, then wipe progress
+                self.locked_until = int(now) + 400
+                self.root.after(400, self.reset_attempt)
 
         elif event.keysym == "BackSpace":
             if self.typed:
@@ -353,7 +297,9 @@ class LockScreen:
         if all_correct:
             self.unlock()
         else:
-            self.root.after(0, self.reset_attempt)
+            now = self.root.tk.call('clock', 'milliseconds')
+            self.locked_until = int(now) + 400
+            self.root.after(400, self.reset_attempt)
 
     def reset_attempt(self):
         self.typed = []

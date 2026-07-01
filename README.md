@@ -1,38 +1,31 @@
-# Locker (Only Unix, Windows Functionality addeed later)
+# Locker (Unix/Linux)
 
-An intentionally ugly lock screen with a passphrase, pixelated background, and
-random green/red keystroke flashes.
+An intentionally ugly lock screen with a passphrase.
 
 - Passphrase can be any length (min 4 characters), any mix of letters,
   numbers, and symbols.
 - Nothing is ever stored in plaintext — each character is salted and
   SHA-256 hashed.
-- To submit, press **Enter 3 times within 219.5491s**. A single Enter does
+- To submit, press **Enter 3 times within 219.5491ms**. A single Enter does
   nothing.
+- Wrong guess? 400ms lockout, then you start over.
 
 ## Requirements
 
 - Python 3.8+
-- `pillow` (`PIL`)
+- `tkinter` (part of standard Python, but some Linux distros split it out)
 
+On Fedora/RHEL:
 ```bash
-python3 -m pip install --user pillow
+sudo dnf install python3-tkinter
 ```
 
-On Fedora/Linux, `ImageTk` ships separately from base Pillow:
-
+On Debian/Ubuntu:
 ```bash
-sudo dnf install python3-pillow-tk
+sudo apt install python3-tk
 ```
 
-(Debian/Ubuntu: `sudo apt install python3-pil.imagetk`)
-
-`tkinter` is part of the Python standard library, but some Linux distros
-split it out — if `import tkinter` fails, install it (`sudo dnf install
-python3-tkinter` or `sudo apt install python3-tk`). Windows/Mac installers
-from python.org include it by default.
-
-## Setup — both platforms
+## Setup
 
 1. Download `lock.py` and put it somewhere permanent (not a temp/Downloads
    folder you'll clean out later).
@@ -50,9 +43,6 @@ from python.org include it by default.
 
    Type your passphrase, then press **Enter 3 times fast** to unlock.
 
-That's the whole cross-platform part. The rest of this README is about
-wiring it up to a keyboard shortcut, which works differently per OS.
-
 ## Linux (GNOME/Fedora) — keyboard shortcut
 
 Use the included `setup_shortcut.sh`. It registers a GNOME custom
@@ -65,22 +55,3 @@ bash setup_shortcut.sh
 To change the key combo, edit `SHORTCUT_KEY` near the top of the script
 before running it, or change it later in **Settings > Keyboard > Custom
 Shortcuts > Locker**.
-
-### Background pixelation on Linux
-
-`lock.py` tries these screenshot tools, in order, and falls back to a
-plain gray background if none are found:
-
-- `gnome-screenshot` (recomended)
-- `grim` (Wayland)
-- `import` (ImageMagick, X11)
-- `scrot` (X11)
-- Pillow's built-in `ImageGrab` (works on some Linux setups too)
-
-If your background stays plain gray instead of pixelated, install one of
-the above, e.g.:
-
-```bash
-sudo dnf install gnome-screenshot     # or: grim, ImageMagick, scrot
-```
-
