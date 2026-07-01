@@ -26,7 +26,7 @@ NEW_PATH="$CUSTOM_BASE_PATH/custom$i/"
 if [ "$existing" = "@as []" ]; then
   new_list="['$NEW_PATH']"
 else
-  new_list=$(echo "$existing" | sed "s/]/, '$NEW_PATH']/")
+  new_list=$(echo "$existing" | sed "s|]|, '$NEW_PATH']|")
 fi
 gsettings set "$MEDIA_KEYS_SCHEMA" custom-keybindings "$new_list"
 
