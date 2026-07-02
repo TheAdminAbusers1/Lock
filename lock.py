@@ -55,7 +55,7 @@ TRIPLE_TAP_WINDOW_MS = 219.5491
 
 # How long to lock out input after an incorrect attempt (wrong character,
 # or wrong full passphrase on submit), before progress is wiped (ms)
-WRONG_CHAR_LOCKOUT_MS = 3500
+WRONG_CHAR_LOCKOUT_MS = 1000
 
 
 # ---------------------------------------------------------------------------
