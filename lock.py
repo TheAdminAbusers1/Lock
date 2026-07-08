@@ -29,12 +29,19 @@ import math
 import hashlib
 import secrets
 import random
+import platform
 import tkinter as tk
 from tkinter import font as tkfont
 
 
+IS_WINDOWS = platform.system() == "Windows"
 
-CONFIG_DIR = os.path.expanduser("~/.config/locker")
+if IS_WINDOWS:
+    # Windows has no ~/.config convention; use %APPDATA% instead.
+    CONFIG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Locker")
+else:
+    CONFIG_DIR = os.path.expanduser("~/.config/locker")
+
 PIN_FILE = os.path.join(CONFIG_DIR, "pin.json")
 
 UGLY_YELLOW = "#fbff00"
@@ -46,6 +53,12 @@ UGLY_DARK_GREEN = "#006400"
 UGLY_RED = "#ff2200"
 BG_FALLBACK = "#3a3a3a"
 RING_UNLIT = "#888888"
+
+# "Sans" is a generic alias Tk resolves via fontconfig on Linux/macOS, but
+# Windows' Tk build doesn't know it and silently substitutes a default font.
+# Use a real font name there instead so the (intentionally ugly) look is
+# consistent across platforms.
+UGLY_FONT_FAMILY = "Segoe UI" if IS_WINDOWS else "Sans"
 
 # Ring is split into this many segments; segments light up on keystrokes
 RING_SEGMENTS = 8
@@ -64,7 +77,10 @@ WRONG_CHAR_LOCKOUT_MS = 1000
 
 def ensure_config_dir():
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    os.chmod(CONFIG_DIR, 0o700)
+    if not IS_WINDOWS:
+        # POSIX permission bits; Windows uses ACLs instead, and chmod
+        # there only toggles the read-only attribute, so skip it there.
+        os.chmod(CONFIG_DIR, 0o700)
 
 
 def hash_char(salt: str, position: int, ch: str) -> str:
@@ -79,7 +95,8 @@ def save_pin(passphrase: str):
     data = {"salt": salt, "length": len(passphrase), "hashes": hashes}
     with open(PIN_FILE, "w") as f:
         json.dump(data, f)
-    os.chmod(PIN_FILE, 0o600)
+    if not IS_WINDOWS:
+        os.chmod(PIN_FILE, 0o600)
 
 
 def load_pin_data():
@@ -100,7 +117,7 @@ def run_setup():
     root.geometry("460x240")
     root.configure(bg=UGLY_BLUE)
 
-    ugly_font = tkfont.Font(family="Sans", size=14, weight="bold")
+    ugly_font = tkfont.Font(family=UGLY_FONT_FAMILY, size=14, weight="bold")
 
     tk.Label(root, text="Choose a passphrase (letters, numbers, symbols, any length \u2265 4)",
               bg=UGLY_BLUE, fg=UGLY_YELLOW, font=ugly_font, wraplength=420,
@@ -225,14 +242,14 @@ class LockScreen:
         self.canvas.create_rectangle(cx - 6, cy + 28, cx + 2, cy + 55,
                                       fill=UGLY_BLUE, outline="")
 
-        clash_font = tkfont.Font(family="Sans", size=20, weight="bold")
+        clash_font = tkfont.Font(family=UGLY_FONT_FAMILY, size=20, weight="bold")
         self.canvas.create_text(cx, cy - ring_radius - 40,
                                  text="LOCKED", fill=UGLY_GREEN, font=clash_font)
 
         # progress dots, no digits/chars shown, just count typed
         self.progress_text = self.canvas.create_text(
             cx, cy + ring_radius + 40, text="", fill="white",
-            font=tkfont.Font(family="Sans", size=18, weight="bold"))
+            font=tkfont.Font(family=UGLY_FONT_FAMILY, size=18, weight="bold"))
 
     def _update_progress_dots(self):
         dots = "*" * len(self.typed)
